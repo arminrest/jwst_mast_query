@@ -72,7 +72,7 @@ def addlink2string(s,link):
     return('<a href="%s">%s</a>' % (link,s))
 
 def imagestring4web(imagename, width=None, height=None):
-    imstring = '<img src="%s"' % os.path.basename(imagename)
+    imstring = '<img src="%s"' % imagename
     if height != None:
         imstring += f' height={height}'
         #if isinstance(height,int): height = str(height)
