@@ -192,6 +192,12 @@ class query_mast:
         self.params['filetypes']=['uncal']
         self.params['guidestars']=False
         self.params['lookbacktime']=1.0
+        
+        
+        self.params['skip_propID2outsubdir']=None
+        self.params['obsnum2outsubdir']=None
+        self.params['propIDs_obsnum2outsubdir']=[]
+        
 
     def define_options(self,parser=None,usage=None,conflict_handler='resolve'):
         if parser is None:
