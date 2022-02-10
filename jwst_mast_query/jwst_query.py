@@ -200,7 +200,7 @@ class query_mast:
         
         self.params['webpage_thumbnail_width']=100
         self.params['webpage_thumbnail_height']=None 
-        self.params['webpage_level12_jpgs:']=['_uncal.jpg','_dark.jpg','_rate.jpg','_rateints.jpg','_trapsfilled.jpg','_cal.jpg','_crf.jpg']
+        self.params['webpage_level12_jpgs']=['_uncal.jpg','_dark.jpg','_rate.jpg','_rateints.jpg','_trapsfilled.jpg','_cal.jpg','_crf.jpg']
 
 
     def define_options(self,parser=None,usage=None,conflict_handler='resolve'):
