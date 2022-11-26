@@ -211,7 +211,7 @@ class download_mast(query_mast):
 
 
 if __name__ == '__main__':
-
+    
     download = download_mast()
     parser = download.define_options()
     args = parser.parse_args()
@@ -238,9 +238,10 @@ if __name__ == '__main__':
         download.productTable.write(indices=download.ix_selected_products,columns=download.params['outcolumns_productTable'])
     else:
         if len(download.ix_selected_products)<=0:
-            print('############## Nothing selected!!!!')
+            print('############## Nothing selected!!!! exiting...')
+            sys.exit(0)
+
     # make the webpages
     if args.makewebpages:
-        download.mk_webpages(skip_propID2outsubdir=download.params['skip_propID2outsubdir'],
-                             obsnum2outsubdir=download.params['obsnum2outsubdir'])
+        download.mk_webpages4propIDs()
 
