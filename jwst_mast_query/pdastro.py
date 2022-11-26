@@ -195,8 +195,8 @@ class pdastroclass:
         self.formattable(namesMapping=namesMapping,roundingMapping=roundingMapping,hexcols=hexcols,auto_find_hexcols=auto_find_hexcols)
         return(0)
 
-    def write(self,filename=None,indices=None,columns=None,formatters=None,raiseError=True,overwrite=True,verbose=False,
-              index=False, makepathFlag=True,convert_dtypes=False,hexcols=None, htmlflag=False, **kwargs):
+    def write(self,filename=None,indices=None,columns=None,formatters=None,raiseError=True,overwrite=True,verbose=False, 
+              index=False, makepathFlag=True,convert_dtypes=False,hexcols=None, htmlflag=False, htmlsortedtable=False,  **kwargs):
 
         # make sure indices are converted into a valid list
         indices=self.getindices(indices)
@@ -272,7 +272,15 @@ class pdastroclass:
                 if not htmlflag:
                     self.t.loc[indices].to_string(filename, index=index, columns=columns, formatters=formatters, **kwargs)
                 else:
-                    self.t.loc[indices].to_html(filename, index=index, columns=columns, formatters=formatters, **kwargs)
+                    if htmlsortedtable:
+                        lines = self.t.loc[indices].to_html(index=index, columns=columns, formatters=formatters, **kwargs)
+                        lines = re.sub('^\<table','<script type="text/javascript" src="sortable.js"></script>\n<table class="sortable" id="anyid" ',lines)
+                        f = open(filename,"w")
+                        f.writelines(lines)
+                        f.close()
+                    else:
+                        self.t.loc[indices].to_html(filename, index=index, columns=columns, formatters=formatters, **kwargs)
+                    #self.t.loc[indices].to_html(filename, index=index, columns=columns, formatters=formatters, **kwargs)
 
         if not (filename is None):
             # some extra error checking...

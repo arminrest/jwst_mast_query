@@ -16,7 +16,8 @@ import argparse,os,sys,re,types,copy
 import yaml
 
 # pdastroclass is wrapper around pandas.
-from jwst_mast_query.pdastro import pdastroclass,unique,AnotB,AorB,AandB
+#from jwst_mast_query.pdastro import pdastroclass,unique,AnotB,AorB,AandB
+from pdastro import pdastroclass,unique,AnotB,AorB,AandB
 
 # MAST API documentation:
 # https://mast.stsci.edu/api/v0/pyex.html
@@ -86,6 +87,24 @@ def imagestring4web(imagename, width=None, height=None):
 def image_thumbnail(imagename, width=None, height=None):
     return(addlink2string(imagestring4web(imagename,width=width,height=height),imagename))
 
+def rmfile(filename,raiseError=1,gzip=False):
+    " if file exists, remove it "
+    if os.path.lexists(filename):
+        os.remove(filename)
+        if os.path.isfile(filename):
+            if raiseError == 1:
+                raise RuntimeError('ERROR: Cannot remove %s' % filename)
+            else:
+                return(1)
+    if gzip and os.path.lexists(filename+'.gz'):
+        os.remove(filename+'.gz')
+        if os.path.isfile(filename+'.gz'):
+            if raiseError == 1:
+                raise RuntimeError('ERROR: Cannot remove %s' % filename+'.gz')
+            else:
+                return(2)
+    return(0)
+
 
 class query_mast:
     def __init__(self):
@@ -124,7 +143,7 @@ class query_mast:
         None.
 
         """
-        self.outdir = None
+        self.outrootdir = None
 
         # observation and product table
         self.obsTable = pdastroclass()
@@ -207,6 +226,8 @@ class query_mast:
         parser.add_argument('-f','--filetypes',  type=str, nargs="+", default=None, help=('List of product filetypes to get, e.g., _uncal.fits or _uncal.jpg. If only letters, then _ and .fits are added, for example uncal gets expanded to _uncal.fits. Typical image filetypes are uncal, rate, rateints, cal (default=%(default)s)'))
         parser.add_argument('--calib_levels',  type=int, nargs="+", default=None, help=('Only select products with the specified calibration levels (calib_level column in productTable) (default=%(default)s)'))
 
+        parser.add_argument('--Nobs_per_batch', type=int, default=None, help='When querying for products for a given list of observations, split into batches of N observations per batch. This helps to prevent time outs when querying for large lists of products!')
+
         parser.add_argument('-c','--configfile', type=str, default=cfgfilename, help='optional config file. default is set to $JWST_QUERY_CFGFILE. Use -vvv to see the full list of all set parameters.')
         parser.add_argument('--login', default=None, nargs=2, help='username and password for login')
         parser.add_argument('--token', type=str, default=defaulttoken, help='MAST API token. You can also set the token in the environment variable \$MAST_API_TOKEN')
@@ -220,7 +241,7 @@ class query_mast:
 
         parser.add_argument('-e','--obsid_select', nargs="+", default=[], help='Specify obsid range applied to "obsID" and "parent_obsid" columns in the PRODUCT table. If single value, then exact match. If single value has "+" or "-" at the end, then it is a lower and upper limit, respectively. If two values, then range. Examples: 385539+, 385539-, 385539 385600 (default=%(default)s)')
         parser.add_argument('-l','--obsid_list', nargs="+", default=[], help='Specify list of obsid applied to "obsID" and "parent_obsid" columns in the PRODUCT table. examples: 385539 385600 385530 (default=%(default)s)')
-        parser.add_argument('--obnum_list', nargs="+", default=[], help='Specify list of obsnum (default=%(default)s)')
+#        parser.add_argument('--obnum_list', nargs="+", default=[], help='Specify list of obsnum (default=%(default)s)')
         parser.add_argument('--sca', nargs="+", default=None, choices=['a1','a2','a3','a4','a5','along','b1','b2','b3','b4','b5','blong','guider1','guider2','nrs1','nrs2','mirimage','mirifulong','mirifushort','nis'], help='Specify list of sca\'s to select. a5=along, b5=blong')
 
         time_group = parser.add_argument_group("Time constraints for the observation/product search")
@@ -329,12 +350,13 @@ class query_mast:
                 if arg not in  self.params:
                     self.params[arg]=None
 
-        # propID
         if 'obsnums' not in self.params.keys():
             self.params['obsnums']=None
+            
+        # propID
         if self.params['propID'] is not None:
-        #    if len(self.params['propID'])>1:
-        #        self.params['obsnums'] = self.params['propID'][1:]
+            if len(self.params['propID'])>1:
+                self.params['obsnums'] = self.params['propID'][1:]
             self.params['propID'] = '%05d' % (int(self.params['propID'][0]))
         print('propID',self.params['propID'])
         print('obsnums',self.params['obsnums'])
@@ -634,7 +656,7 @@ class query_mast:
                 productTable.t.loc[ixs_null,'obsnum'] = obsTable.t.loc[ix_obsTable,'obsnum']
 
 
-    def product_query(self, obsTable=None, guidestars=None):
+    def product_query_bkp(self, obsTable=None, guidestars=None):
         '''
         Perform query for data products based on obs_id's in observation table
         '''
@@ -710,6 +732,113 @@ class query_mast:
             print('List of all filetypes of obtained products:',allfiletypes)
 
         return self.productTable
+
+    def product_query(self, obsTable=None, guidestars=None, Nobs_per_batch=2):
+        '''
+        Perform query for data products based on obs_id's in observation table
+        '''
+
+        from astropy.table import vstack
+
+        if obsTable is None:
+            obsTable=self.obsTable
+
+        if guidestars is None:
+            guidestars = self.params['guidestars']
+            if guidestars is None:
+                guidestars = False
+
+
+        # query MAST for all products for the obsid's
+        obsids = ','.join(obsTable.t['obsid'].astype('str'))
+        service = self.SERVICES['Product_search']
+        #params = {"obsid":obsids,
+        #          "columns":['type','productType'],
+        #          "format":"json"
+        #          }
+        if Nobs_per_batch is not None:
+            if self.verbose:
+                print(f'\n#### Querying ProductTable in Nobs={Nobs_per_batch} per batch ....')
+
+            obsid_list = list(obsTable.t['obsid'].astype('str'))
+            obsids_chunks = [obsid_list[i:i+Nobs_per_batch] for i in range(0, len(obsid_list), Nobs_per_batch)]
+            tmptables = []
+            if self.verbose:
+                print(f'{len(obsids_chunks)} batches')
+            for obsids_chunk in obsids_chunks:
+                obsids = ','.join(obsids_chunk)
+                if self.verbose:
+                    print(f'Querying products for obsids={obsids}')
+                params = {"obsid":obsids,
+                          "columns":['type','productType'],
+                          "format":"json"
+                          }
+                tmptable = self.JwstObs.service_request(service, params).to_pandas()
+                if self.verbose:
+                    print(f'{len(tmptable)} products found for this chunk of observations')
+                tmptables.append(tmptable)
+            self.productTable.t = pd.concat(tmptables, axis=0, ignore_index=True)
+        else:
+            params = {"obsid":obsids,
+                      "columns":['type','productType'],
+                      "format":"json"
+                      }
+            if self.verbose:
+                print('\n#### Querying ProductTable....')
+            self.productTable.t = self.JwstObs.service_request(service, params).to_pandas()
+        #self.productTable.write()
+        if self.verbose:
+            print(f'productTable obtained with {len(self.productTable.t)} entries')
+        
+        # remove guide stars if wanted...
+        if not guidestars:
+            ixs_products = self.productTable.getindices()
+            gs_text = '_gs-'
+            ixs_gs = self.productTable.ix_matchregex('productFilename',gs_text)
+            ixs_keep_products = AnotB(ixs_products,ixs_gs)
+            self.productTable.t=self.productTable.t.loc[ixs_keep_products].reset_index()
+            if self.verbose:
+                print('Removing %d guide star products from a total of %d products, %d left' % (len(ixs_gs),len(ixs_products),len(ixs_keep_products)))
+
+        # Fill the suffix column with the suffix of the form _bla1.bla2, e.g. _uncal.fits
+        # This will later be used to figure out
+        self.productTable.t['filetype'] = self.productTable.t['productFilename'].str.extract(r'(\_[a-zA-Z0-9]+\.[a-zA-Z0-9]+)$')
+
+        scas = list(np.repeat(np.nan, len(self.productTable.t['obs_id'])))
+        for i, oid in enumerate(self.productTable.t['obs_id']):
+            match = [word for word in ALL_SCAS if word in oid]
+            if len(match) > 0:
+                scas[i] = match[0]
+        self.productTable.t['sca'] = scas
+
+        # Find the obsnum # from the filename if possible.
+        ixs = self.productTable.getindices()
+        obsnumsearch = re.compile('^jw\d{5}(\d{3})\d{3}\_')
+        self.productTable.t['obsnum']=pd.NA
+        for ix in ixs:
+            m = obsnumsearch.search(self.productTable.t.loc[ix,'obs_id'])
+            if m is not None:
+                self.productTable.t.loc[ix,'obsnum']=int(m.groups()[0])
+            else:
+                self.productTable.t.loc[ix,'obsnum']=pd.NA
+
+        # make proposal_id integer
+        self.productTable.t['proposal_id']=self.productTable.t['proposal_id'].astype('int')
+        # make obsid integer
+        if 'obsID' in self.productTable.t.columns:
+            self.productTable.t['obsID']=self.productTable.t['obsID'].astype('int')
+        if 'parent_obsid' in self.productTable.t.columns:
+            self.productTable.t['parent_obsid']=self.productTable.t['parent_obsid'].astype('int')
+
+        self.fix_obsnum(obsTable=obsTable, productTable=self.productTable)
+
+        if self.verbose: print('productTable columns:',self.productTable.t.columns)
+        if self.verbose:
+            allfiletypes = unique(self.productTable.t['filetype'])
+            print('List of all filetypes of obtained products:',allfiletypes)
+
+        return self.productTable
+
 
     def product_filter(self, productTable=None, filetypes=None, calib_levels=None, gs_omit=True):
         '''
@@ -811,33 +940,54 @@ class query_mast:
         new_ix_obs_sorted = AandB(ix_obs_sorted,new_ix_obs_sorted)
 
         return(new_ix_obs_sorted)
-
-    def mk_outfilename(self, productTable, ix,
-                       outdir=None,
-                       skip_propID2outsubdir=False,
-                       #obsnum2outsubdir=False,
-                       #info2filename=False,
-                       skip_check_if_outfile_exists=False,
-                       skip_check_filesize=False):
-
-
+    
+    def get_outdir(self,productTable, ix,
+                   outdir=None,
+                   skip_propID2outsubdir=False,
+                   obsnum2outsubdir=False):
+            
         if outdir is None:
-            outdir = self.outdir
+            outdir = self.outrootdir
         if outdir is None:
             raise RuntimeError("outdir is not defined!")
-        outdir.rstrip("/")
+        outdir = outdir.rstrip("/")
 
 
         if not skip_propID2outsubdir:
-            #outdir += f'/{productTable.t.loc[ix,"proposal_id"]}'
-            outdir += '/{:05d}'.format(productTable.t.loc[ix,"proposal_id"])
+            outdir += f'/{productTable.t.loc[ix,"proposal_id"]:05d}'
+            #outdir += '/{:05d}'.format(productTable.t.loc[ix,"proposal_id"])
 
-        #if obsnum2outsubdir:
-        #    if productTable.t.loc[ix,"obsnum"] is pd.NA:
-        #        outdir += '/NA'
-        #    else:
-        #        outdir += f'/{productTable.t.loc[ix,"obsnum"]}'
+        # shameless hack: for NIRCam
+        if obsnum2outsubdir or (int(productTable.t.loc[ix,"proposal_id"]) in self.params["propIDs_obsnum2outsubdir"]):
+            if productTable.t.loc[ix,"obsnum"] is pd.NA:
+                outdir += '/NA'
+            else:
+                outdir += f'/obsnum{productTable.t.loc[ix,"obsnum"]}'
+        return(outdir)
 
+    
+    def mk_outfilename(self, productTable, ix, 
+                       outdir=None,
+                       skip_propID2outsubdir=False,
+                       obsnum2outsubdir=False,
+                       skip_check_if_outfile_exists=False,
+                       skip_check_filesize=False):
+
+        # get the output directory
+        outdir = self.get_outdir(productTable, ix, outdir=outdir,
+                                 skip_propID2outsubdir=skip_propID2outsubdir,
+                                 obsnum2outsubdir=obsnum2outsubdir)
+
+
+        #if outdir is None:
+        #    outdir = self.outrootdir
+        #if outdir is None:
+        #    raise RuntimeError("outdir is not defined!")
+        #outdir.rstrip("/")
+
+
+        #if not skip_propID2outsubdir:
+        #    outdir += '/{:05d}'.format(productTable.t.loc[ix,"proposal_id"])
 
         outfilename = productTable.t.loc[ix,'productFilename']
 
@@ -864,29 +1014,30 @@ class query_mast:
                 productTable.t.loc[ix,'dl_str'] = None
 
 
-    def set_outdir(self,outrootdir=None,outsubdir=None):
-        self.outdir = outrootdir
-        if self.outdir is None:
-            self.outdir = self.params['outrootdir']
+    def set_outrootdir(self,outrootdir=None,outsubdir=None):
+        self.outrootdir = outrootdir
+        if self.outrootdir is None:
+            self.outrootdir = self.params['outrootdir']
         # if outdir is not defined, use '.'
-        if self.outdir is None or self.outdir == '':
-            self.outdir = '.'
+        if self.outrootdir is None or self.outrootdir == '':
+            self.outrootdir = '.'
 
 
         if outsubdir is not None and outsubdir!='':
-            self.outdir  += f'/{outsubdir}'
+            self.outrootdir  += f'/{outsubdir}'
         elif self.params['outsubdir'] is not None and self.params['outsubdir']!='':
-            self.outdir  += f'/{self.params["outsubdir"]}'
+            self.outrootdir  += f'/{self.params["outsubdir"]}'
 
-        self.outdir = os.path.abspath(self.outdir)
-        return(self.outdir)
+        self.outrootdir = os.path.abspath(self.outrootdir)
+        return(self.outrootdir)
+    
 
     def mk_outfilenames(self,
                         productTable=None,
                         ix_selected_products=None,
                         outdir=None,
                         skip_propID2outsubdir=False,
-#                        info2filename=False,
+                        obsnum2outsubdir=False,
                         skip_check_if_outfile_exists=False,
                         skip_check_filesize=False):
 
@@ -910,6 +1061,7 @@ class query_mast:
                                 ix,
                                 outdir=outdir,
                                 skip_propID2outsubdir=skip_propID2outsubdir,
+                                obsnum2outsubdir=obsnum2outsubdir,
                                 skip_check_if_outfile_exists=skip_check_if_outfile_exists,
                                 skip_check_filesize=skip_check_filesize)
         return(self.ix_selected_products)
@@ -1038,8 +1190,10 @@ class query_mast:
         self.ix_summary_sorted = self.summary.ix_sort_by_cols(self.params['sortcols_summaryTable'])
 
         return(0)
-
-    def mk_webpages(self, productTable=None, ix_selected_products=None, filetypes=None, width=None, height=None):
+    
+    def mk_webpages(self, productTable=None, ix_selected_products=None, filetypes=None, 
+                    skip_propID2outsubdir=False, obsnum2outsubdir=False,
+                    width=None, height=None):
         if productTable is None:
             # make a deep copy so that the thumbnail columns are not copied into the self.productTable
             productTable= copy.deepcopy(self.productTable)
@@ -1059,12 +1213,18 @@ class query_mast:
         propIDs = unique(productTable.t.loc[ix_selected_products,'proposal_id'])
         for propID in propIDs:
             propID = int(propID)
-            htmlname = f'{self.outdir}/{propID:05d}/index.html'
-
+            htmldir = f'{self.outrootdir}/{propID:05d}'
+            htmlname = f'{htmldir}/index.html'
+            
             # get all indices for uncal.jpg
             ixs_propID = productTable.ix_equal('proposal_id',propID,indices=ix_selected_products)
             ixs_uncal  = productTable.ix_equal('filetype','_uncal.jpg',indices=ixs_propID)
             ixs_uncal =  productTable.ix_sort_by_cols(self.params['sortcols_productTable'],indices=ixs_uncal)
+
+            if len(ixs_uncal)==0:
+                print(f'WARNING: propID={propID} has no entries! Removing {htmlname} and continuing...')
+                rmfile(htmlname)
+                continue
 
             # figure out the jpg suffixes, and define the column names
             suffixes = self.params['webpage_level12_jpgs']
@@ -1076,8 +1236,19 @@ class query_mast:
 
             #make the thumbnails
             for ix in ixs_uncal:
+                outdir = os.path.dirname(productTable.t.loc[ix,'outfilename'])
+                commonpath = os.path.commonpath([outdir,htmldir])
+                if len(commonpath)==0:
+                    raise RuntimeError(f'Somethings is wrong, htmldir={htmldir} has no common path with outdir={outdir}')
+                subdir = outdir[len(commonpath):]
+                subdir = subdir.lstrip("/")
+                
                 for suffix,figcol in zip(suffixes,figcols):
-                    jpgname = f"{productTable.t.loc[ix,'obs_id']}{suffix}"
+                    if  subdir=='':
+                        jpgname = f"{productTable.t.loc[ix,'obs_id']}{suffix}"
+                    else:
+                        jpgname = f"{subdir}/{productTable.t.loc[ix,'obs_id']}{suffix}"
+                        
                     # make a thumbnail that links to the full size image
                     productTable.t.loc[ix,figcol]=image_thumbnail(jpgname,width=width,height=height)
                     #productTable.t.loc[ix,figcol]=addlink2string(imagestring4web(jpgname,width=None,height=p),jpgname)
@@ -1091,7 +1262,10 @@ class query_mast:
 
             # write it to index.html
             print(f'writing propID={propID} html to {htmlname}')
-            productTable.write(filename=htmlname, indices=ixs_uncal, columns=outcols, htmlflag=True, escape=False)
+            productTable.write(filename=htmlname, indices=ixs_uncal, columns=outcols, htmlflag=True, htmlsortedtable=True, escape=False)
+            #f = open(htmlname,"w")
+            #f.writelines(tablelines)
+            #f.close()
 
     def mk_all_tables(self, filetypes=None, showtables=True):
 
@@ -1106,7 +1280,7 @@ class query_mast:
 
         if len(self.obsTable.t)==0:
             print('\n################################\nNO OBSERVATIONS FOUND! exiting....\n################################')
-            return(0)
+            return(1)
 
         if self.verbose>1:
             print(self.obsTable.t)
@@ -1115,7 +1289,7 @@ class query_mast:
         # get the products:  stored in self.productTable
         # this list contains in general several entries for each observations.
         # If not otherwise specified, uses self.obsTable as starting point
-        self.product_query()
+        self.product_query(Nobs_per_batch=self.params['Nobs_per_batch'])
         if self.verbose>1:
             print(self.productTable.t)
             #print(self.productTable.columns)
@@ -1141,6 +1315,7 @@ class query_mast:
 
         # definte the output filenames, and check if they exist.
         self.mk_outfilenames(skip_propID2outsubdir=self.params['skip_propID2outsubdir'],
+                             obsnum2outsubdir=self.params['obsnum2outsubdir'],
                              skip_check_if_outfile_exists=self.params['skip_check_if_outfile_exists'],
                              skip_check_filesize=self.params['skip_check_filesize'])
 
@@ -1183,8 +1358,8 @@ if __name__ == '__main__':
     # use arguments or $API_MAST_TOKEN to login
     query.login(raiseErrorFlag=False)
 
-    # self.outdir is set depending on outrootdir and outsubdir in cfg file or through the options --outrootdir and --outsubdir
-    query.set_outdir()
+    # self.outrootdir is set depending on outrootdir and outsubdir in cfg file or through the options --outrootdir and --outsubdir
+    query.set_outrootdir()
     if query.verbose: print(f'Outdir: {query.outdir}')
 
     # make the tables
@@ -1192,7 +1367,8 @@ if __name__ == '__main__':
 
     # make the webpages
     if args.makewebpages:
-        query.mk_webpages()
+        query.mk_webpages(skip_propID2outsubdir=query.params['skip_propID2outsubdir'],
+                          obsnum2outsubdir=query.params['obsnum2outsubdir'])
 
 
 

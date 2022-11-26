@@ -15,7 +15,8 @@ import os,sys,shutil,re
 from astropy.utils.data import download_file
 
 from jwst_query import query_mast
-from jwst_mast_query.pdastro import makepath4file,AnotB
+#from jwst_mast_query.pdastro import makepath4file,AnotB
+from pdastro import makepath4file,AnotB
 
 
 # MAST API documentation:
@@ -163,9 +164,9 @@ class download_mast(query_mast):
             print(f'\n###############################\n### Downloading {len(ixs_download)} files')
             print(skip_string)
 
-        print(f'Outdir: {self.outdir}/<proposal_id> where <proposal_id> is the value in the proposal_id column')
-
-        if ask_confirm_download:
+        print(f'Outdir: {self.outrootdir}/<proposal_id> where <proposal_id> is the value in the proposal_id column')
+        
+        if ask_confirm_download and len(ixs_download)>0:
             do_it = input('Do you want to continue and download these products [y/n]?  ')
             if do_it.lower() in ['y','yes']:
                 pass
@@ -175,6 +176,10 @@ class download_mast(query_mast):
             else:
                 print(f'Hmm, \'{do_it}\' is neither yes or no. Don\'t know what to do, so stopping ....')
                 sys.exit(0)
+        else:
+            if len(ixs_download)<=0:
+                print('############## Nothing to download!!!!')
+                return(0)
 
         counter = 1
         successcounter=0
@@ -191,8 +196,6 @@ class download_mast(query_mast):
             outfilename = productTable.t.loc[ix,'outfilename']
 
             (dl_code,dl_str) = self.download_product(url, outfilename, clobber=clobber)
-
-            #self.JwstObs._download_file(url, outfilename)
 
             productTable.t.loc[ix,'dl_code']=dl_code
             productTable.t.loc[ix,'dl_str']=dl_str
@@ -220,19 +223,24 @@ if __name__ == '__main__':
 
     # use arguments or $API_MAST_TOKEN to login
     download.login(raiseErrorFlag=True)
-
-    # self.outdir is set depending on outrootdir and outsubdir in cfg file or through the options --outrootdir and --outsubdir
-    download.set_outdir()
-    if download.verbose: print(f'Outdir: {download.outdir}')
-
-    # make the tables, but don't show them yet, since the output files need to be updated first
-    download.mk_all_tables(showtables=True)
-
-    if not args.skipdownload and len(download.obsTable.t)>0:
+    
+    # self.outrootdir is set depending on outrootdir and outsubdir in cfg file or through the options --outrootdir and --outsubdir
+    download.set_outrootdir()
+    if download.verbose: print(f'Outdir: {download.outrootdir}')
+        
+    # make the tables, but don't show them yet, since the output files need to be updated first  
+    if download.mk_all_tables(showtables=True):
+        sys.exit(0)
+    
+    if not args.skipdownload and len(download.ix_selected_products)>0:
         download.download_products()
         print('\n######################\n### Downloaded Selected Products:\n######################')
         download.productTable.write(indices=download.ix_selected_products,columns=download.params['outcolumns_productTable'])
-
+    else:
+        if len(download.ix_selected_products)<=0:
+            print('############## Nothing selected!!!!')
     # make the webpages
-    if args.makewebpages and len(download.productTable.t) > 0:
-        download.mk_webpages()
+    if args.makewebpages:
+        download.mk_webpages(skip_propID2outsubdir=download.params['skip_propID2outsubdir'],
+                             obsnum2outsubdir=download.params['obsnum2outsubdir'])
+
